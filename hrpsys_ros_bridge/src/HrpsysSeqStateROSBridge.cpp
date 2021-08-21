@@ -30,6 +30,16 @@ static const char* hrpsysseqstaterosbridge_spec[] =
   };
 // </rtc-template>
 
+char *time_string()
+{
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+  struct tm *tm_ = localtime(&tv.tv_sec);
+  static char time[20];
+  sprintf(time, "%02d:%02d:%02d.%06d", tm_->tm_hour, tm_->tm_min, tm_->tm_sec, (int)tv.tv_usec);
+  return time;
+}
+
 HrpsysSeqStateROSBridge::HrpsysSeqStateROSBridge(RTC::Manager* manager) :
   use_sim_time(false), use_hrpsys_time(false),
 #ifdef USE_PR2_CONTROLLERS_MSGS
@@ -62,6 +72,9 @@ HrpsysSeqStateROSBridge::HrpsysSeqStateROSBridge(RTC::Manager* manager) :
   joint_controller_state_pub = nh.advertise<control_msgs::JointTrajectoryControllerState>("/fullbody_controller/state", 1);
 #endif
   trajectory_command_sub = nh.subscribe("/fullbody_controller/command", 1, &HrpsysSeqStateROSBridge::onTrajectoryCommandCB, this);
+  joy_sub = nh.subscribe("/joy", 1, &HrpsysSeqStateROSBridge::onJoySubCB, this, ros::TransportHints().tcpNoDelay());
+  linear_vel_sub = nh.subscribe("/linear_vel_local", 1, &HrpsysSeqStateROSBridge::onZedVelSubCB, this, ros::TransportHints().tcpNoDelay());
+  zed_odom_sub = nh.subscribe("/zed/odom", 1, &HrpsysSeqStateROSBridge::onZedOdomSubCB, this, ros::TransportHints().tcpNoDelay());
   mot_states_pub = nh.advertise<hrpsys_ros_bridge::MotorStates>("/motor_states", 1);
   odom_pub = nh.advertise<nav_msgs::Odometry>("/odom", 1);
   imu_pub = nh.advertise<sensor_msgs::Imu>("/imu", 1);
@@ -164,6 +177,9 @@ RTC::ReturnCode_t HrpsysSeqStateROSBridge::onInitialize() {
     cop_pub[i] = nh.advertise<geometry_msgs::PointStamped>(tmpname+"_cop", 10);
   }
   em_mode_pub = nh.advertise<std_msgs::Int32>("emergency_mode", 10);
+
+  m_SegwaySensors.data.length(6); m_SegwaySensors.data[0] = 0.0; m_SegwaySensors.data[1] = 0.0; m_SegwaySensors.data[2] = 0.0; m_SegwaySensors.data[3] = 0.0; m_SegwaySensors.data[4] = 0.0; m_SegwaySensors.data[5] = 0.0;
+  m_NinebotSensors.data.length(5); m_NinebotSensors.data[0] = 0.0; m_NinebotSensors.data[1] = 0; m_NinebotSensors.data[2] = 0; m_NinebotSensors.data[3] = 0; m_NinebotSensors.data[4] = 0;
 
   return RTC::RTC_OK;
 }
@@ -275,6 +291,31 @@ void HrpsysSeqStateROSBridge::onFollowJointTrajectoryActionPreempt() {
 
 void HrpsysSeqStateROSBridge::onTrajectoryCommandCB(const trajectory_msgs::JointTrajectoryConstPtr& msg) {
   onJointTrajectory(*msg);
+}
+
+void HrpsysSeqStateROSBridge::onJoySubCB(const sensor_msgs::JoyConstPtr& msg) {
+  // std::cerr << msg->axes[1] << std::endl;
+  v_d = V_d_max * msg->axes[1];
+  // omega_d = Omega_d_max * msg->axes[2]; // before Ubuntu18.04
+  omega_d = Omega_d_max * msg->axes[3]; // after Ubuntu18.04
+  /*  TODO: ps3joy map is changed after Ubuntu18.04 !!! So, the following lines are commented out.
+  foot_pos_d = Foot_pos_d_max * msg->axes[2];
+  oneleg_roll_d = Oneleg_roll_d_max * msg->axes[3];
+  ninebot_start_learning_ps3joy = msg->buttons[12];
+  ninebot_stop_learning_ps3joy = msg->buttons[14];
+  ninebot_vd_on_ps3joy = msg->buttons[3];
+  ninebot_vd_off_ps3joy = msg->buttons[0];
+  */
+}
+
+void HrpsysSeqStateROSBridge::onZedVelSubCB(const geometry_msgs::Vector3ConstPtr& msg) {
+  // ROS_INFO("msg->twist.twist.linear.x: %f", msg->twist.twist.linear.x);
+  linear_vel_local_msg = *msg;
+}
+
+void HrpsysSeqStateROSBridge::onZedOdomSubCB(const nav_msgs::OdometryConstPtr& msg) {
+  // ROS_INFO("msg->pose.pose.position.x: %f", msg->pose.pose.position.x);
+  zed_odom_msg = *msg;
 }
 
 bool HrpsysSeqStateROSBridge::setSensorTransformation(hrpsys_ros_bridge::SetSensorTransformation::Request& req,
@@ -903,6 +944,23 @@ RTC::ReturnCode_t HrpsysSeqStateROSBridge::onExecute(RTC::UniqueId ec_id)
         ROS_ERROR_STREAM("[" << getInstanceName() << "] " << e.what());
       }
   }
+
+  m_SegwaySensors.data[0] = omega_d;
+  m_SegwaySensors.data[1] = v_d;
+  m_SegwaySensors.data[2] = linear_vel_local_msg.x;
+  // ROS_INFO("zed_odom_msg.pose.pose.position.x: %f", zed_odom_msg.pose.pose.position.x);
+  m_SegwaySensors.data[3] = zed_odom_msg.pose.pose.position.x;
+  m_SegwaySensors.data[4] = zed_odom_msg.pose.pose.orientation.w;
+  m_SegwaySensors.data[5] = oneleg_roll_d;
+  // std::cerr << "localtime: [" << time_string() << "]" << std::endl;
+  m_SegwaySensorsOut.write();
+
+  m_NinebotSensors.data[0] = foot_pos_d;
+  m_NinebotSensors.data[1] = ninebot_start_learning_ps3joy;
+  m_NinebotSensors.data[2] = ninebot_stop_learning_ps3joy;
+  m_NinebotSensors.data[3] = ninebot_vd_on_ps3joy;
+  m_NinebotSensors.data[4] = ninebot_vd_off_ps3joy;
+  m_NinebotSensorsOut.write();
 
   //
   return RTC::RTC_OK;

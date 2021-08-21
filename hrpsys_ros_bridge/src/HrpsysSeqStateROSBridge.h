@@ -33,6 +33,9 @@
 #include "diagnostic_msgs/DiagnosticArray.h"
 #include "sensor_msgs/Imu.h"
 #include "hrpsys_ros_bridge/SetSensorTransformation.h"
+#include "sensor_msgs/Joy.h"
+#include "geometry_msgs/Vector3.h"
+#include "sys/time.h"
 
 extern const char* hrpsysseqstaterosbridgeimpl_spec[];
 
@@ -54,6 +57,9 @@ class HrpsysSeqStateROSBridge  : public HrpsysSeqStateROSBridgeImpl
   void onFollowJointTrajectoryActionGoal();
   void onFollowJointTrajectoryActionPreempt();
   void onTrajectoryCommandCB(const trajectory_msgs::JointTrajectoryConstPtr& msg);
+  void onJoySubCB(const sensor_msgs::JoyConstPtr& msg);
+  void onZedVelSubCB(const geometry_msgs::Vector3ConstPtr& msg);
+  void onZedOdomSubCB(const nav_msgs::OdometryConstPtr& msg);
   bool sendMsg (dynamic_reconfigure::Reconfigure::Request &req,
                 dynamic_reconfigure::Reconfigure::Response &res);
   bool setSensorTransformation(hrpsys_ros_bridge::SetSensorTransformation::Request& req,
@@ -62,6 +68,9 @@ class HrpsysSeqStateROSBridge  : public HrpsysSeqStateROSBridgeImpl
   ros::NodeHandle nh;
   ros::Publisher joint_state_pub, joint_controller_state_pub, mot_states_pub, diagnostics_pub, clock_pub, zmp_pub, ref_cp_pub, act_cp_pub, odom_pub, imu_pub, em_mode_pub, ref_contact_states_pub, act_contact_states_pub;
   ros::Subscriber trajectory_command_sub;
+  ros::Subscriber joy_sub;
+  ros::Subscriber linear_vel_sub;
+  ros::Subscriber zed_odom_sub;
   std::vector<ros::Publisher> fsensor_pub, cop_pub;
 #ifdef USE_PR2_CONTROLLERS_MSGS
   actionlib::SimpleActionServer<pr2_controllers_msgs::JointTrajectoryAction> joint_trajectory_server;
@@ -92,6 +101,28 @@ class HrpsysSeqStateROSBridge  : public HrpsysSeqStateROSBridgeImpl
 
   boost::mutex tf_mutex;
   double tf_rate;
+  double V_d_max = 0.3; // segway demo
+  // double V_d_max = 0.1; // seesaw demo best (20200910)
+  double Omega_d_max = 0.8;
+  // double Foot_pos_d_max = 0.025;
+  // double Foot_pos_d_max = 0.002;
+  // double Foot_pos_d_max = 0.1; // ref_zmp y
+  // double Foot_pos_d_max = 0.3; // ref_zmp y
+  // double Foot_pos_d_max = 0.6; // ref_zmp y
+  // double Foot_pos_d_max = 1.0; // ref_zmp y
+  // double Foot_pos_d_max = 0.1; // new_refzmp y
+  // double Foot_pos_d_max = 0.002; // rootLink pos y
+  // double Foot_pos_d_max = 0.008; // rootLink pos y
+  double Foot_pos_d_max = 0.0; // ref_root_rpy(0) [deg]   Disable for Segway (2019/01/19)
+  // double Foot_pos_d_max = 20.0; // ref_root_rpy(0) [deg]   Ninebot best parameter (2019/01/19)
+  // double Foot_pos_d_max = 0.3; // ref_root_pos(1) [m]
+  // double Oneleg_roll_d_max = 0.1; // new_refzmp y [m]
+  double Oneleg_roll_d_max = 0.15; // new_refzmp y [m]
+  // double Oneleg_roll_d_max = 1.0; // Delta stikp[0].d_foot_rpy[0] [deg]
+  double v_d, omega_d, foot_pos_d, oneleg_roll_d;
+  int ninebot_start_learning_ps3joy, ninebot_stop_learning_ps3joy, ninebot_vd_on_ps3joy, ninebot_vd_off_ps3joy;
+  geometry_msgs::Vector3 linear_vel_local_msg;
+  nav_msgs::Odometry zed_odom_msg;
   ros::Timer periodic_update_timer;
   std::vector<geometry_msgs::TransformStamped> tf_transforms;
   void periodicTimerCallback(const ros::TimerEvent& event);
